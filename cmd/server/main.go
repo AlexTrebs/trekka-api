@@ -10,15 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"cloud.google.com/go/firestore"
-	"cloud.google.com/go/storage"
-	"google.golang.org/api/option"
-
 	"trekka-api/internal/config"
-	"trekka-api/internal/handlers"
-	"trekka-api/internal/middleware"
-	"trekka-api/internal/router"
-	"trekka-api/internal/services"
+	"trekka-api/internal/server"
 )
 
 func main() {
@@ -30,44 +23,25 @@ func main() {
 
 	ctx := context.Background()
 
-	// Initialize Firebase Storage client
-	storageClient, err := storage.NewClient(
-		ctx,
-		option.WithCredentialsFile(cfg.FirebaseCredentialsPath),
-	)
-
+	// Initialize all services
+	svcs, err := server.InitServices(ctx, cfg)
 	if err != nil {
-		log.Fatalf("Failed to create Firebase Storage client: %v", err)
+		log.Fatalf("Failed to initialize services: %v", err)
 	}
-	defer storageClient.Close()
 
-	// Initialize Firestore client
-	firestoreClient, err := firestore.NewClient(
-		ctx,
-		cfg.FirebaseProjectID,
-		option.WithCredentialsFile(cfg.FirebaseCredentialsPath),
-	)
+	// Create HTTP handler
+	handler := server.CreateHandler(svcs.Image, cfg.AllowedOrigins)
 
-	if err != nil {
-		log.Fatalf("Failed to create Firestore client: %v", err)
+	// Start Google Drive background sync if enabled
+	var driveCancelFunc context.CancelFunc
+	if svcs.Drive != nil {
+		driveCancelFunc = server.StartDriveSync(
+			context.Background(),
+			svcs.Drive,
+			cfg.DriveSyncInterval,
+			cfg.DriveBackfillOnStartup,
+		)
 	}
-	defer firestoreClient.Close()
-
-	// Initialize services
-	cacheService := services.NewCacheService(cfg.CacheTTL, cfg.CacheCleanupInterval)
-	storageService := services.NewStorageService(storageClient, cfg.FirebaseBucketName)
-	firestoreService := services.NewFirestoreService(firestoreClient, cfg.FirestoreCollection)
-	imageService := services.NewImageService(storageService, cacheService, firestoreService)
-
-	// Initialize handlers
-	h := handlers.New(imageService)
-
-	// Setup router with middleware
-	mux := router.Setup(h)
-
-	// Apply global middleware
-	handler := middleware.Logger(mux)
-	handler = middleware.CORS(handler, cfg.AllowedOrigins)
 
 	// Create server
 	server := &http.Server{
@@ -92,6 +66,12 @@ func main() {
 	<-quit
 
 	log.Println("Server shutting down...")
+
+	// Stop Drive sync if running
+	if driveCancelFunc != nil {
+		log.Println("🛑 Stopping Drive sync...")
+		driveCancelFunc()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -21,6 +21,10 @@ type Config struct {
 	CacheTTL                time.Duration
 	CacheCleanupInterval    time.Duration
 	AllowedOrigins          []string
+	GoogleDriveFolderID     string        // Google Drive folder ID for sync
+	GoogleAPIKey            string        // Google API key for Drive access (alternative to service account)
+	DriveSyncInterval       time.Duration // How often to check Drive for new files (default: 5 minutes)
+	DriveBackfillOnStartup  bool          // Run one-time backfill on server startup before starting watch
 }
 
 // Load reads configuration from environment variables and .env file.
@@ -42,6 +46,10 @@ func Load() (*Config, error) {
 		CacheTTL:                getDurationEnv("CACHE_TTL", 12*time.Hour),
 		CacheCleanupInterval:    getDurationEnv("CACHE_CLEANUP_INTERVAL", 10*time.Minute),
 		AllowedOrigins:          getList("ALLOWED_ORIGINS", []string{"*"}),
+		GoogleDriveFolderID:     getEnv("GOOGLE_DRIVE_FOLDER_ID", ""),
+		GoogleAPIKey:            getEnv("GOOGLE_API_KEY", ""),
+		DriveSyncInterval:       getDurationEnv("DRIVE_SYNC_INTERVAL", 5*time.Minute),
+		DriveBackfillOnStartup:  getBoolEnv("DRIVE_BACKFILL_ON_STARTUP", false),
 	}
 
 	// Validate required fields
@@ -102,6 +110,16 @@ func getDurationEnv(key string, defaultValue time.Duration) time.Duration {
 func getList(key string, defaultValue []string) []string {
 	if value := os.Getenv(key); value != "" {
 		return strings.Split(value, ",")
+	}
+	return defaultValue
+}
+
+// Retrieves a boolean from environment variable or returns a default value.
+func getBoolEnv(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if b, err := strconv.ParseBool(value); err == nil {
+			return b
+		}
 	}
 	return defaultValue
 }

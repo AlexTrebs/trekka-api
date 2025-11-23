@@ -16,18 +16,20 @@ type CacheEntry struct {
 }
 
 type ImageRequest struct {
+	Id       string
 	FileName string
 }
 
 type ImageMetadata struct {
-	ID          string      `firestore:"id,omitempty"`
-	FileName    string      `firestore:"fileName"`
-	ContentType string      `firestore:"contentType"`
-	Coordinates Coordinates `firestore:"coordinates,omitempty"`
-	StoragePath string      `firestore:"storagePath"`
-	GeoLocation string      `firestore:"geoLocation,omitempty"`
-	CreatedAt   time.Time   `firestore:"createdAt,omitempty"`
-	UpdatedAt   time.Time   `firestore:"updatedAt,omitempty"`
+	Id            string      `firestore:"id,omitempty"`
+	FileName      string      `firestore:"fileName"`
+	ContentType   string      `firestore:"contentType"`
+	Coordinates   Coordinates `firestore:"coordinates,omitempty"`
+	StoragePath   string      `firestore:"storagePath"`
+	GeoLocation   string      `firestore:"geoLocation,omitempty"`   // Format: "City, Country"
+	FormattedDate string      `firestore:"formattedDate,omitempty"` // Format: "Wednesday, 15 January 2025, 14:30"
+	CreatedAt     time.Time   `firestore:"createdAt,omitempty"`
+	UpdatedAt     time.Time   `firestore:"updatedAt,omitempty"`
 }
 
 type ImageResponse struct {

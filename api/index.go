@@ -6,106 +6,59 @@ import (
 	"net/http"
 	"sync"
 
-	"cloud.google.com/go/firestore"
-	"cloud.google.com/go/storage"
-	"google.golang.org/api/option"
-
 	"trekka-api/internal/config"
-	"trekka-api/internal/handlers"
-	"trekka-api/internal/middleware"
-	"trekka-api/internal/router"
-	"trekka-api/internal/services"
+	"trekka-api/internal/server"
 )
 
 var (
-	handler     http.Handler
-	mu          sync.Mutex
-	initErr     error
-	initialized bool
+	handler http.Handler
+	initErr error
+	once    sync.Once
 )
 
-// initHandler initializes the HTTP handler once and reuses it across invocations.
-// Uses double-checked locking for optimal performance in serverless environments.
-// Returns an error if initialization fails, allowing retry on next request.
-//
-// Note: Firebase clients are not explicitly closed as Vercel's serverless
-// runtime handles resource cleanup on function termination.
+// Initializes the HTTP handler once and reuses it across invocations.
+// Uses sync.Once to ensure thread-safe single initialization without data races.
 func initHandler() error {
-	// Fast path: check without lock (first check)
-	if initialized && initErr == nil {
-		return nil
-	}
+	once.Do(func() {
+		ctx := context.Background()
 
-	mu.Lock()
-	defer mu.Unlock()
+		// Load and validate configuration
+		cfg, err := config.Load()
+		if err != nil {
+			log.Printf("Failed to load configuration: %v", err)
+			initErr = err
+			return
+		}
 
-	// Double-check after acquiring lock
-	if initialized {
-		return initErr
-	}
+		// Initialize all services
+		svcs, err := server.InitServices(ctx, cfg)
+		if err != nil {
+			log.Printf("Failed to initialize services: %v", err)
+			initErr = err
+			return
+		}
 
-	ctx := context.Background()
+		// Create HTTP handler
+		wrappedHandler := server.CreateHandler(svcs.Image, cfg.AllowedOrigins)
 
-	// Load and validate configuration
-	cfg, err := config.Load()
-	if err != nil {
-		log.Printf("Failed to load configuration: %v", err)
-		initErr = err
-		initialized = true
-		return err
-	}
+		// Start Google Drive background sync if enabled
+		// Note: In serverless environments, this goroutine persists across requests
+		// within the same container instance
+		if svcs.Drive != nil {
+			server.StartDriveSync(
+				context.Background(),
+				svcs.Drive,
+				cfg.DriveSyncInterval,
+				cfg.DriveBackfillOnStartup,
+			)
+		}
 
-	// Configure Firebase credentials
-	var opts []option.ClientOption
-	if cfg.FirebaseCredentialsJSON != "" {
-		// Use JSON credentials from environment variable (preferred for Vercel)
-		opts = append(opts, option.WithCredentialsJSON([]byte(cfg.FirebaseCredentialsJSON)))
-	} else {
-		// Use credentials file (for local development)
-		opts = append(opts, option.WithCredentialsFile(cfg.FirebaseCredentialsPath))
-	}
+		// Only set handler after full successful initialization
+		handler = wrappedHandler
+		log.Println("Handler initialized successfully")
+	})
 
-	// Initialize Firebase Storage client
-	storageClient, err := storage.NewClient(ctx, opts...)
-	if err != nil {
-		log.Printf("Failed to create Firebase Storage client: %v", err)
-		initErr = err
-		initialized = true
-		return err
-	}
-
-	// Initialize Firestore client
-	firestoreClient, err := firestore.NewClient(ctx, cfg.FirebaseProjectID, opts...)
-	if err != nil {
-		log.Printf("Failed to create Firestore client: %v", err)
-		initErr = err
-		initialized = true
-		return err
-	}
-
-	// Initialize services
-	cacheService := services.NewCacheService(cfg.CacheTTL, cfg.CacheCleanupInterval)
-	storageService := services.NewStorageService(storageClient, cfg.FirebaseBucketName)
-	firestoreService := services.NewFirestoreService(firestoreClient, cfg.FirestoreCollection)
-	imageService := services.NewImageService(storageService, cacheService, firestoreService)
-
-	// Initialize handlers
-	h := handlers.New(imageService)
-
-	// Setup router with middleware
-	mux := router.Setup(h)
-
-	// Apply global middleware
-	wrappedHandler := middleware.Logger(mux)
-	wrappedHandler = middleware.CORS(wrappedHandler, cfg.AllowedOrigins)
-
-	// Only set handler and mark as initialized after full successful initialization
-	handler = wrappedHandler
-	initialized = true
-	initErr = nil
-
-	log.Println("Handler initialized successfully")
-	return nil
+	return initErr
 }
 
 // Handler is the Vercel serverless function entry point

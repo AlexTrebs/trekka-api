@@ -61,6 +61,7 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 		} else {
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 		}
+		return
 	}
 
 	log.Printf("[Image] Served %s (%s at %s) in %v", fileName, contentType, geoLocation, time.Since(start))
