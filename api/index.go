@@ -19,80 +19,104 @@ import (
 
 var (
 	handler     http.Handler
-	handlerOnce sync.Once
+	mu          sync.Mutex
 	initErr     error
+	initialized bool
 )
 
-// Initialize handler once and reuse across invocations
-func initHandler() {
-	handlerOnce.Do(func() {
-		ctx := context.Background()
+// initHandler initializes the HTTP handler once and reuses it across invocations.
+// Uses double-checked locking for optimal performance in serverless environments.
+// Returns an error if initialization fails, allowing retry on next request.
+//
+// Note: Firebase clients are not explicitly closed as Vercel's serverless
+// runtime handles resource cleanup on function termination.
+func initHandler() error {
+	// Fast path: check without lock (first check)
+	if initialized && initErr == nil {
+		return nil
+	}
 
-		// Load configuration
-		cfg, err := config.Load()
-		if err != nil {
-			initErr = err
-			log.Printf("Failed to load configuration: %v", err)
-			return
-		}
+	mu.Lock()
+	defer mu.Unlock()
 
-		// Configure Firebase credentials
-		var opts []option.ClientOption
-		if cfg.FirebaseCredentialsJSON != "" {
-			// Use JSON credentials from environment variable (preferred for Vercel)
-			opts = append(opts, option.WithCredentialsJSON([]byte(cfg.FirebaseCredentialsJSON)))
-		} else if cfg.FirebaseCredentialsPath != "" {
-			// Use credentials file (for local development)
-			opts = append(opts, option.WithCredentialsFile(cfg.FirebaseCredentialsPath))
-		}
+	// Double-check after acquiring lock
+	if initialized {
+		return initErr
+	}
 
-		// Initialize Firebase Storage client
-		storageClient, err := storage.NewClient(ctx, opts...)
-		if err != nil {
-			initErr = err
-			log.Printf("Failed to create Firebase Storage client: %v", err)
-			return
-		}
+	ctx := context.Background()
 
-		// Initialize Firestore client
-		firestoreClient, err := firestore.NewClient(ctx, cfg.FirebaseProjectID, opts...)
-		if err != nil {
-			initErr = err
-			log.Printf("Failed to create Firestore client: %v", err)
-			return
-		}
+	// Load and validate configuration
+	cfg, err := config.Load()
+	if err != nil {
+		log.Printf("Failed to load configuration: %v", err)
+		initErr = err
+		initialized = true
+		return err
+	}
 
-		// Initialize services
-		cacheService := services.NewCacheService(cfg.CacheTTL, cfg.CacheCleanupInterval)
-		storageService := services.NewStorageService(storageClient, cfg.FirebaseBucketName)
-		firestoreService := services.NewFirestoreService(firestoreClient, cfg.FirestoreCollection)
-		imageService := services.NewImageService(storageService, cacheService, firestoreService)
+	// Configure Firebase credentials
+	var opts []option.ClientOption
+	if cfg.FirebaseCredentialsJSON != "" {
+		// Use JSON credentials from environment variable (preferred for Vercel)
+		opts = append(opts, option.WithCredentialsJSON([]byte(cfg.FirebaseCredentialsJSON)))
+	} else {
+		// Use credentials file (for local development)
+		opts = append(opts, option.WithCredentialsFile(cfg.FirebaseCredentialsPath))
+	}
 
-		// Initialize handlers
-		h := handlers.New(imageService)
+	// Initialize Firebase Storage client
+	storageClient, err := storage.NewClient(ctx, opts...)
+	if err != nil {
+		log.Printf("Failed to create Firebase Storage client: %v", err)
+		initErr = err
+		initialized = true
+		return err
+	}
 
-		// Setup router with middleware
-		mux := router.Setup(h)
+	// Initialize Firestore client
+	firestoreClient, err := firestore.NewClient(ctx, cfg.FirebaseProjectID, opts...)
+	if err != nil {
+		log.Printf("Failed to create Firestore client: %v", err)
+		initErr = err
+		initialized = true
+		return err
+	}
 
-		// Apply global middleware
-		handler = middleware.Logger(mux)
-		handler = middleware.CORS(handler, cfg.AllowedOrigins)
+	// Initialize services
+	cacheService := services.NewCacheService(cfg.CacheTTL, cfg.CacheCleanupInterval)
+	storageService := services.NewStorageService(storageClient, cfg.FirebaseBucketName)
+	firestoreService := services.NewFirestoreService(firestoreClient, cfg.FirestoreCollection)
+	imageService := services.NewImageService(storageService, cacheService, firestoreService)
 
-		log.Println("Handler initialized successfully")
-	})
+	// Initialize handlers
+	h := handlers.New(imageService)
+
+	// Setup router with middleware
+	mux := router.Setup(h)
+
+	// Apply global middleware
+	wrappedHandler := middleware.Logger(mux)
+	wrappedHandler = middleware.CORS(wrappedHandler, cfg.AllowedOrigins)
+
+	// Only set handler and mark as initialized after full successful initialization
+	handler = wrappedHandler
+	initialized = true
+	initErr = nil
+
+	log.Println("Handler initialized successfully")
+	return nil
 }
 
 // Handler is the Vercel serverless function entry point
 func Handler(w http.ResponseWriter, r *http.Request) {
-	// Initialize handler on first request
-	initHandler()
-
-	// Check if initialization failed
-	if initErr != nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	// Attempt initialization (will succeed immediately if already initialized)
+	if err := initHandler(); err != nil {
+		log.Printf("Handler initialization failed: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
-	// Serve the request
+	// Delegate to the initialized handler
 	handler.ServeHTTP(w, r)
 }

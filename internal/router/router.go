@@ -15,7 +15,7 @@ func Setup(h *handlers.Handler) http.Handler {
 
 	// Image endpoints
 	mux.HandleFunc("/image", h.HandleImage)
-	mux.HandleFunc("/images/list", h.HandleAll)
+	mux.HandleFunc("/images/list", h.HandleImagesList)
 
 	return mux
 }

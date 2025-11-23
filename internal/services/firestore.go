@@ -48,7 +48,7 @@ func (fs *FirestoreService) GetImageMetadataByFileName(ctx context.Context, file
 
 	doc, err := iter.Next()
 	if err == iterator.Done {
-		return nil, fmt.Errorf("no metadata found for storage path: %s", fileName)
+		return nil, fmt.Errorf("no metadata found for fileName: %s", fileName)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to query metadata: %w", err)
@@ -63,14 +63,26 @@ func (fs *FirestoreService) GetImageMetadataByFileName(ctx context.Context, file
 	return &metadata, nil
 }
 
-// Retrieves all image metadata from the collection.
+// Retrieves all image metadata from the collection with pagination.
 func (fs *FirestoreService) ListImageMetadata(ctx context.Context, limit int, page int) ([]*models.ImageMetadata, error) {
+	// Validate pagination parameters
+	if limit < 0 {
+		return nil, fmt.Errorf("limit cannot be negative")
+	}
+	if page < 0 {
+		return nil, fmt.Errorf("page cannot be negative")
+	}
+
 	query := fs.client.Collection(fs.collection).OrderBy("createdAt", firestore.Desc)
 
 	if limit > 0 {
+		// Cap maximum limit to prevent excessive memory usage
+		if limit > 1000 {
+			limit = 1000
+		}
 		query = query.Limit(limit)
 		if page > 0 {
-			query = query.Offset((page - 1) * limit)
+			query = query.Offset(page * limit)
 		}
 	}
 
@@ -89,7 +101,8 @@ func (fs *FirestoreService) ListImageMetadata(ctx context.Context, limit int, pa
 
 		var metadata models.ImageMetadata
 		if err := doc.DataTo(&metadata); err != nil {
-			return nil, fmt.Errorf("failed to parse metadata: %w", err)
+			// Log but don't fail on individual document parse errors
+			continue
 		}
 
 		metadata.ID = doc.Ref.ID

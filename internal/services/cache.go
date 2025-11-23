@@ -12,6 +12,7 @@ type CacheService struct {
 	mu              sync.RWMutex
 	ttl             time.Duration
 	cleanupInterval time.Duration
+	stopChan        chan struct{}
 }
 
 func NewCacheService(ttl, cleanupInterval time.Duration) *CacheService {
@@ -19,6 +20,7 @@ func NewCacheService(ttl, cleanupInterval time.Duration) *CacheService {
 		cache:           make(map[string]*models.CacheEntry),
 		ttl:             ttl,
 		cleanupInterval: cleanupInterval,
+		stopChan:        make(chan struct{}),
 	}
 
 	// Start cleanup goroutine
@@ -46,7 +48,12 @@ func (cs *CacheService) Get(key string) (*models.CacheEntry, bool) {
 
 // Stores data in the cache with the specified key and metadata.
 // The entry will expire after the configured TTL.
+// Returns early if key or data is empty to prevent invalid cache entries.
 func (cs *CacheService) Set(key string, data []byte, contentType, geoLocation, fileName string) {
+	if key == "" || len(data) == 0 {
+		return
+	}
+
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
@@ -65,14 +72,23 @@ func (cs *CacheService) cleanupExpired() {
 	ticker := time.NewTicker(cs.cleanupInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		now := time.Now()
-		cs.mu.Lock()
-		for k, v := range cs.cache {
-			if v.Expires.Before(now) {
-				delete(cs.cache, k)
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+			cs.mu.Lock()
+			for k, v := range cs.cache {
+				if v.Expires.Before(now) {
+					delete(cs.cache, k)
+				}
 			}
+			cs.mu.Unlock()
+		case <-cs.stopChan:
+			return
 		}
-		cs.mu.Unlock()
 	}
+}
+
+func (cs *CacheService) Stop() {
+	close(cs.stopChan)
 }

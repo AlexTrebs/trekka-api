@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"trekka-api/internal/models"
@@ -19,11 +20,31 @@ import (
 func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	query := r.URL.Query()
-	fileName := query.Get("fileName")
+	// Only allow GET requests
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
+	query := r.URL.Query()
+	fileName := strings.TrimSpace(query.Get("fileName"))
+
+	// Validate fileName parameter
 	if fileName == "" {
-		http.Error(w, "Missing fileName", http.StatusBadRequest)
+		http.Error(w, "Missing fileName parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Security: Prevent path traversal attacks
+	if strings.Contains(fileName, "..") || strings.Contains(fileName, "/") || strings.Contains(fileName, "\\") {
+		log.Printf("[Image] Security: Rejected suspicious fileName: %s", fileName)
+		http.Error(w, "Invalid fileName", http.StatusBadRequest)
+		return
+	}
+
+	// Validate fileName length
+	if len(fileName) > 255 {
+		http.Error(w, "fileName too long", http.StatusBadRequest)
 		return
 	}
 
@@ -34,8 +55,12 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 	data, contentType, geoLocation, err := h.imageService.GetImage(r.Context(), req)
 	if err != nil {
 		log.Printf("[Image] Failed to get image %s: %v", fileName, err)
-		http.Error(w, "File not found", http.StatusNotFound)
-		return
+		// Check if it's a "not found" error vs infrastructure error
+		if strings.Contains(err.Error(), "no metadata found") {
+			http.Error(w, "File not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		}
 	}
 
 	log.Printf("[Image] Served %s (%s at %s) in %v", fileName, contentType, geoLocation, time.Since(start))
@@ -44,7 +69,7 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	w.Header().Set("Content-Disposition",
-		fmt.Sprintf(`inline; filename="%s"`, url.QueryEscape(fileName)))
+		fmt.Sprintf(`inline; filename="%s"`, url.PathEscape(fileName)))
 	w.Header().Set("X-Geo-Location", geoLocation)
 
 	if _, err := w.Write(data); err != nil {
@@ -55,14 +80,40 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 // Retrieves and serves images from Firebase Storage with caching.
 // GET /images/list
 // Query parameters:
-//   - limit (optional): number of items to return
-//   - page  (optional): what page of items to return
+//   - limit (optional): number of items to return (max 1000, default 100)
+//   - page  (optional): what page of items to return (0-indexed, default 0)
 func (h *Handler) HandleImagesList(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
+	// Only allow GET requests
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	query := r.URL.Query()
-	limit, _ := strconv.Atoi(query.Get("limit")) // defaults to 0 if not provided or invalid
-	page, _ := strconv.Atoi(query.Get("page"))   // defaults to 0 if not provided or invalid
+
+	// Parse and validate limit parameter
+	limit := 100 // default
+	if limitStr := query.Get("limit"); limitStr != "" {
+		parsedLimit, err := strconv.Atoi(limitStr)
+		if err != nil || parsedLimit < 0 {
+			http.Error(w, "Invalid limit parameter", http.StatusBadRequest)
+			return
+		}
+		limit = parsedLimit
+	}
+
+	// Parse and validate page parameter
+	page := 0 // default
+	if pageStr := query.Get("page"); pageStr != "" {
+		parsedPage, err := strconv.Atoi(pageStr)
+		if err != nil || parsedPage < 0 {
+			http.Error(w, "Invalid page parameter", http.StatusBadRequest)
+			return
+		}
+		page = parsedPage
+	}
 
 	images, err := h.imageService.ListImages(r.Context(), limit, page)
 	if err != nil {
@@ -71,10 +122,10 @@ func (h *Handler) HandleImagesList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[Images] Served %d images in %v", len(images), time.Since(start))
+	log.Printf("[Images] Served %d images (limit=%d, page=%d) in %v", len(images), limit, page, time.Since(start))
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", "public, max-age=300") // Shorter cache for list endpoints
 
 	if err := json.NewEncoder(w).Encode(images); err != nil {
 		log.Printf("[Images] Failed to encode response: %v", err)

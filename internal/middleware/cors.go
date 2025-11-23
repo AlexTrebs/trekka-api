@@ -30,4 +30,3 @@ func CORS(next http.Handler, allowedOrigins []string) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-}

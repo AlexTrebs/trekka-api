@@ -295,23 +295,132 @@ The API implements an in-memory LRU cache with:
 
 ## Deployment
 
-### Vercel
+### Vercel (Serverless)
 
-This project includes Vercel deployment configuration. See [VERCEL_DEPLOYMENT.md](VERCEL_DEPLOYMENT.md) for details.
+This project is optimized for Vercel deployment with serverless functions.
 
-### Traditional Hosting
+#### Prerequisites
 
-1. Build the Docker image
-2. Push to your container registry
-3. Deploy to your preferred hosting platform (GCP Cloud Run, AWS ECS, etc.)
-4. Ensure Firebase credentials are securely mounted or provided via secrets
+- Vercel account
+- Firebase service account JSON credentials
+
+#### Deployment Steps
+
+1. **Install Vercel CLI** (optional):
+
+   ```bash
+   npm i -g vercel
+   ```
+
+2. **Set up environment variables in Vercel**:
+
+   Go to your Vercel project settings → Environment Variables and add:
+
+   ```
+   FIREBASE_PROJECT_ID=your-project-id
+   FIREBASE_BUCKET_NAME=your-bucket-name
+   FIREBASE_CREDENTIALS_JSON={"type":"service_account",...}
+   FIRESTORE_COLLECTION=images
+   CACHE_TTL=12h
+   CACHE_CLEANUP_INTERVAL=10m
+   ALLOWED_ORIGINS=https://yourdomain.com
+   ```
+
+   **Important**: For `FIREBASE_CREDENTIALS_JSON`, paste your entire Firebase service account JSON as a single-line string.
+
+3. **Deploy**:
+
+   ```bash
+   vercel --prod
+   ```
+
+   Or connect your GitHub repository to Vercel for automatic deployments.
+
+#### Vercel Configuration
+
+The `vercel.json` file configures:
+
+- Go runtime for the serverless function
+- Route all requests to `api/index.go`
+
+#### Performance Notes
+
+- The serverless function uses singleton pattern with double-checked locking to reuse Firebase clients across invocations
+- First request may be slower due to cold start
+- Subsequent requests within the same instance are fast
+
+For more details, see [VERCEL_DEPLOYMENT.md](VERCEL_DEPLOYMENT.md).
+
+### Docker / Traditional Hosting
+
+Deploy as a containerized application to any platform:
+
+1. **Build the Docker image**:
+
+   ```bash
+   docker build -t trekka-api .
+   ```
+
+2. **Push to container registry**:
+
+   ```bash
+   docker tag trekka-api your-registry/trekka-api:latest
+   docker push your-registry/trekka-api:latest
+   ```
+
+3. **Deploy to your platform**:
+   - **Google Cloud Run**: `gcloud run deploy`
+   - **AWS ECS/Fargate**: Create task definition and service
+   - **Kubernetes**: Use provided Docker image in deployment
+
+4. **Configure secrets**:
+   - Mount `firebase-service-account.json` as a secret volume
+   - Or use `FIREBASE_CREDENTIALS_JSON` environment variable
+   - Set all required environment variables from `.env.example`
+
+#### Example: Google Cloud Run
+
+```bash
+gcloud run deploy trekka-api \
+  --image your-registry/trekka-api:latest \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars FIREBASE_PROJECT_ID=your-project-id \
+  --set-env-vars FIREBASE_BUCKET_NAME=your-bucket \
+  --set-env-vars FIRESTORE_COLLECTION=images
+```
 
 ## Security Considerations
 
-- Firebase service account credentials should never be committed to version control
+### Credentials Management
+
+- **Never commit Firebase service account credentials to version control**
+- Add `firebase-service-account.json` to `.gitignore`
 - Use environment variables or secret management systems for sensitive configuration
-- CORS origins should be restricted in production environments
-- Consider implementing authentication/authorization for production use
+- For Vercel: Use `FIREBASE_CREDENTIALS_JSON` environment variable
+- For Docker: Mount credentials as read-only secrets
+
+### API Security
+
+- **CORS**: Restrict `ALLOWED_ORIGINS` in production (avoid using `*`)
+  ```
+  ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
+  ```
+- **Path Traversal Protection**: Implemented in image handlers to prevent directory traversal attacks
+- **Input Validation**: All user inputs are validated for type, format, and length
+- **File Size Limits**: Maximum file size is capped at 50MB to prevent memory exhaustion
+- **Rate Limiting**: Consider adding rate limiting middleware for production use
+- **Authentication**: This API currently has no authentication - add authentication/authorization for production
+
+### Production Recommendations
+
+1. Implement authentication (Firebase Auth, JWT, API keys)
+2. Add rate limiting to prevent abuse
+3. Enable logging and monitoring
+4. Use HTTPS only (enforced by Vercel and most cloud platforms)
+5. Regularly rotate service account credentials
+6. Set up alerts for unusual access patterns
 
 ## Contributing
 

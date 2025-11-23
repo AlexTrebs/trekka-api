@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -43,7 +44,35 @@ func Load() (*Config, error) {
 		AllowedOrigins:          getList("ALLOWED_ORIGINS", []string{"*"}),
 	}
 
+	// Validate required fields
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// Validate checks that all required configuration fields are set.
+func (c *Config) Validate() error {
+	if c.FirebaseProjectID == "" {
+		return fmt.Errorf("FIREBASE_PROJECT_ID is required")
+	}
+	if c.FirebaseBucketName == "" {
+		return fmt.Errorf("FIREBASE_BUCKET_NAME is required")
+	}
+	if c.FirebaseCredentialsJSON == "" && c.FirebaseCredentialsPath == "" {
+		return fmt.Errorf("either FIREBASE_CREDENTIALS_JSON or FIREBASE_CREDENTIALS_PATH must be set")
+	}
+	if c.FirestoreCollection == "" {
+		return fmt.Errorf("FIRESTORE_COLLECTION is required")
+	}
+	if c.CacheTTL <= 0 {
+		return fmt.Errorf("CACHE_TTL must be positive")
+	}
+	if c.CacheCleanupInterval <= 0 {
+		return fmt.Errorf("CACHE_CLEANUP_INTERVAL must be positive")
+	}
+	return nil
 }
 
 // Retrieves an environment variable or returns a default value if not set.
