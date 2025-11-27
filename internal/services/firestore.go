@@ -3,11 +3,14 @@ package services
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"cloud.google.com/go/firestore"
 	"google.golang.org/api/iterator"
 
 	"trekka-api/internal/models"
+	"trekka-api/internal/utils"
 )
 
 type FirestoreService struct {
@@ -34,32 +37,6 @@ func (fs *FirestoreService) GetImageMetadata(ctx context.Context, id string) (*m
 		return nil, fmt.Errorf("failed to parse metadata: %w", err)
 	}
 
-	metadata.ID = doc.Ref.ID
-	return &metadata, nil
-}
-
-// Retrieves image metadata by storage path.
-func (fs *FirestoreService) GetImageMetadataByFileName(ctx context.Context, fileName string) (*models.ImageMetadata, error) {
-	iter := fs.client.Collection(fs.collection).
-		Where("fileName", "==", fileName).
-		Limit(1).
-		Documents(ctx)
-	defer iter.Stop()
-
-	doc, err := iter.Next()
-	if err == iterator.Done {
-		return nil, fmt.Errorf("no metadata found for fileName: %s", fileName)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to query metadata: %w", err)
-	}
-
-	var metadata models.ImageMetadata
-	if err := doc.DataTo(&metadata); err != nil {
-		return nil, fmt.Errorf("failed to parse metadata: %w", err)
-	}
-
-	metadata.ID = doc.Ref.ID
 	return &metadata, nil
 }
 
@@ -105,7 +82,6 @@ func (fs *FirestoreService) ListImageMetadata(ctx context.Context, limit int, pa
 			continue
 		}
 
-		metadata.ID = doc.Ref.ID
 		results = append(results, &metadata)
 	}
 
@@ -140,4 +116,27 @@ func (fs *FirestoreService) DeleteImageMetadata(ctx context.Context, id string) 
 	}
 
 	return nil
+}
+
+// Gets image metadata by filename.
+func (fs *FirestoreService) GetImageMetadataByFilename(ctx context.Context, filename string, fileType string) (*models.ImageMetadata, error) {
+	finalFilename := filename
+	if utils.IsHeifLike(fileType) {
+		ext := filepath.Ext(filename)
+		finalFilename = strings.TrimSuffix(filename, ext) + ".jpg"
+	}
+	iter := fs.client.Collection(fs.collection).Where("fileName", "==", finalFilename).Limit(1).Documents(ctx)
+	defer iter.Stop()
+
+	doc, err := iter.Next()
+	if err != nil {
+		return nil, fmt.Errorf("file not found: %w", err)
+	}
+
+	var metadata models.ImageMetadata
+	if err := doc.DataTo(&metadata); err != nil {
+		return nil, fmt.Errorf("failed to parse metadata: %w", err)
+	}
+
+	return &metadata, nil
 }

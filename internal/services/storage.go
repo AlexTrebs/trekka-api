@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -23,13 +24,13 @@ func NewStorageService(client *storage.Client, bucketName string) *StorageServic
 // Retrieves a file from Google Cloud Storage by its path.
 // Returns the file contents as bytes or an error if the file cannot be retrieved.
 // Implements a maximum file size limit to prevent memory exhaustion.
-func (s *StorageService) FetchFile(ctx context.Context, filePath string) ([]byte, error) {
-	if filePath == "" {
+func (s *StorageService) FetchFile(ctx context.Context, storagePath string) ([]byte, error) {
+	if storagePath == "" {
 		return nil, fmt.Errorf("file path cannot be empty")
 	}
 
 	bucket := s.client.Bucket(s.bucketName)
-	obj := bucket.Object(filePath)
+	obj := bucket.Object(storagePath)
 
 	// Get object attributes to check size
 	attrs, err := obj.Attrs(ctx)
@@ -55,4 +56,36 @@ func (s *StorageService) FetchFile(ctx context.Context, filePath string) ([]byte
 	}
 
 	return data, nil
+}
+
+// Uploads a file to Google Cloud Storage.
+// Returns an error if the upload fails.
+func (s *StorageService) UploadFile(ctx context.Context, filePath string, data []byte, contentType string) (err error) {
+	if filePath == "" {
+		return fmt.Errorf("file path cannot be empty")
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("data cannot be empty")
+	}
+
+	bucket := s.client.Bucket(s.bucketName)
+	obj := bucket.Object(filePath)
+
+	writer := obj.NewWriter(ctx)
+	defer func() {
+		if closeErr := writer.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("failed to close writer: %w", closeErr)
+		}
+	}()
+
+	writer.ContentType = contentType
+	writer.Metadata = map[string]string{
+		"uploaded-by": "trekka-drive-sync",
+	}
+
+	if _, err := io.Copy(writer, bytes.NewReader(data)); err != nil {
+		return fmt.Errorf("failed to write file data: %w", err)
+	}
+
+	return nil
 }

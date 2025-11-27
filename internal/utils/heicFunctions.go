@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"image/jpeg"
+	"log"
+	"path/filepath"
 	"strings"
 
 	"github.com/adrium/goheif"
@@ -29,4 +31,24 @@ func ConvertHeicToJpeg(input []byte) ([]byte, error) {
 	}
 
 	return buf.Bytes(), nil
+}
+
+func ConvertIfHeic(name, mime string, data []byte) (string, string, []byte) {
+	if !IsHeifLike(mime) {
+		return name, mime, data
+	}
+
+	log.Printf("Converting HEIC to JPEG: %s", name)
+	jpeg, err := ConvertHeicToJpeg(data)
+	if err != nil {
+		log.Printf("HEIC conversion failed for %s: %v", name, err)
+		return name, mime, data
+	}
+
+	ext := filepath.Ext(name)
+	if ext != "" {
+		name = strings.TrimSuffix(name, ext) + ".jpg"
+	}
+
+	return name, "image/jpeg", jpeg
 }

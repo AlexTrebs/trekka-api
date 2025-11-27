@@ -4,6 +4,8 @@ A high-performance Go API for serving and managing images stored in Firebase Sto
 
 ## Features
 
+### API Server
+
 - **Image Serving**: Fetch and serve images from Firebase Storage
 - **HEIC/HEIF Conversion**: Automatic conversion of HEIC/HEIF images to JPEG format
 - **Intelligent Caching**: In-memory LRU cache with configurable TTL to reduce storage API calls
@@ -13,6 +15,18 @@ A high-performance Go API for serving and managing images stored in Firebase Sto
 - **Health Checks**: Built-in health check endpoint for monitoring
 - **Graceful Shutdown**: Proper cleanup of resources on server termination
 - **Docker Support**: Multi-stage Docker build for optimized production deployments
+
+### Google Drive Sync (Optional)
+
+- **Automatic Sync**: Monitor Google Drive folder for new images
+- **Backfill Support**: Sync all existing images from Drive to Firebase
+- **HEIC Conversion**: Automatically converts HEIC/HEIF files to JPEG during sync
+- **Duplicate Detection**: Skips files already synced to prevent duplicates
+- **Continuous Monitoring**: Watch mode for real-time syncing of new uploads
+- **Robust Rate Limiting**: Automatic retry with exponential backoff (5 attempts per file)
+- **Smart Error Recovery**: Detects persistent rate limits and pauses automatically
+- **Timeout Protection**: 5-minute timeout per download prevents hangs
+- **Standalone Tool**: Separate CLI tool for flexible deployment options
 
 ## Tech Stack
 
@@ -211,8 +225,10 @@ curl http://localhost:8080/images/list?limit=20&page=0
 ```
 trekka-api/
 ├── cmd/
-│   └── server/
-│       └── main.go           # Application entry point
+│   ├── server/
+│   │   └── main.go           # API server entry point
+│   └── sync/
+│       └── main.go           # Google Drive sync tool
 ├── internal/
 │   ├── config/
 │   │   └── config.go         # Configuration loading
@@ -229,6 +245,7 @@ trekka-api/
 │   │   └── router.go         # Route definitions
 │   ├── services/
 │   │   ├── cache.go          # In-memory cache service
+│   │   ├── drive.go          # Google Drive sync service
 │   │   ├── firestore.go      # Firestore operations
 │   │   ├── image.go          # Image processing service
 │   │   └── storage.go        # Firebase Storage operations
@@ -240,15 +257,18 @@ trekka-api/
 ├── go.mod                    # Go module dependencies
 ├── go.sum                    # Dependency checksums
 ├── Makefile                  # Build automation
-└── README.md                 # This file
+├── README.md                 # This file
+└── GOOGLE_DRIVE_SYNC.md      # Google Drive sync documentation
 ```
 
 ## Available Make Commands
 
+### Application Commands
+
 ```bash
 make help              # Show all available commands
-make build             # Build the application binary
-make run               # Run the application
+make build             # Build the application binaries (server + sync)
+make run               # Run the API server
 make dev               # Run with live reload (requires air)
 make test              # Run tests
 make test-coverage     # Run tests with coverage report
@@ -258,6 +278,29 @@ make tidy              # Tidy go.mod
 make fmt               # Format code
 make lint              # Run linter (requires golangci-lint)
 ```
+
+### Google Drive Sync
+
+**Background Sync (Recommended):** Enable automatic syncing when the API server starts:
+
+```bash
+# .env configuration
+ENABLE_DRIVE_SYNC=true
+DRIVE_SYNC_INTERVAL=5m
+DRIVE_BACKFILL_ON_STARTUP=true  # First run only
+
+# Start server with sync
+make run
+```
+
+**Metadata Update Commands:**
+
+```bash
+make sync-update-metadata         # Update GPS metadata for existing files in Firestore
+make sync-update-metadata-dry-run # Preview metadata updates without making changes
+```
+
+For detailed sync documentation, see [GOOGLE_DRIVE_SYNC.md](GOOGLE_DRIVE_SYNC.md).
 
 ## Testing
 
