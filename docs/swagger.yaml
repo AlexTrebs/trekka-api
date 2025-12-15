@@ -1,0 +1,152 @@
+basePath: /
+definitions:
+  trekka-api_internal_models.Coordinates:
+    properties:
+      lat:
+        type: string
+      lng:
+        type: string
+    type: object
+  trekka-api_internal_models.ImageMetadata:
+    properties:
+      contentType:
+        type: string
+      coordinates:
+        $ref: '#/definitions/trekka-api_internal_models.Coordinates'
+      createdAt:
+        description: When record was created
+        type: string
+      fileName:
+        type: string
+      formattedDate:
+        description: 'Format: "Wednesday, 15 January 2025, 14:30"'
+        type: string
+      geoLocation:
+        description: 'Format: "City, Country"'
+        type: string
+      id:
+        type: string
+      resolution:
+        description: 'Format: [width, height]'
+        items:
+          type: number
+        type: array
+      storagePath:
+        type: string
+      takenAt:
+        description: Actual photo capture time from EXIF
+        type: string
+      updatedAt:
+        description: When record was updated
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: support@trekka.com
+    name: API Support
+  description: Image metadata API with EXIF extraction and geolocation
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  termsOfService: http://swagger.io/terms/
+  title: Trekka API
+  version: "1.0"
+paths:
+  /health:
+    get:
+      consumes:
+      - application/json
+      description: Check if the API is running
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 'status: ok'
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Health check
+      tags:
+      - health
+  /image:
+    get:
+      consumes:
+      - application/json
+      description: Retrieve an image from Firebase Storage by filename
+      parameters:
+      - description: Image filename
+        in: query
+        name: fileName
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "302":
+          description: Redirect to signed URL
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            type: string
+        "404":
+          description: Not Found
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
+          schema:
+            type: string
+      security:
+      - ApiKeyAuth: []
+      summary: Get an image
+      tags:
+      - images
+  /images/list:
+    get:
+      consumes:
+      - application/json
+      description: Get a paginated list of images with metadata from Firestore
+      parameters:
+      - default: 1000
+        description: Number of items to return (max 1000, default 1000)
+        in: query
+        name: limit
+        type: integer
+      - default: 0
+        description: Page number (0-indexed, default 0)
+        in: query
+        name: page
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of images
+          schema:
+            items:
+              $ref: '#/definitions/trekka-api_internal_models.ImageMetadata'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
+          schema:
+            type: string
+      security:
+      - ApiKeyAuth: []
+      summary: List images
+      tags:
+      - images
+securityDefinitions:
+  ApiKeyAuth:
+    description: API Key authentication
+    in: header
+    name: X-API-Key
+    type: apiKey
+swagger: "2.0"

@@ -13,10 +13,20 @@ import (
 	"trekka-api/internal/models"
 )
 
-// Retrieves and serves images from Firebase Storage with caching.
-// GET /image?fileName=<name>
-// Query parameters:
-//   - fileName (required): Name of the file for Content-Disposition header
+// HandleImage retrieves and serves images from Firebase Storage with caching.
+//
+//	@Summary		Get an image
+//	@Description	Retrieve an image from Firebase Storage by filename
+//	@Tags			images
+//	@Accept			json
+//	@Produce		json
+//	@Param			fileName	query		string	true	"Image filename"
+//	@Success		302			{string}	string	"Redirect to signed URL"
+//	@Failure		400			{string}	string	"Bad Request"
+//	@Failure		404			{string}	string	"Not Found"
+//	@Failure		500			{string}	string	"Internal Server Error"
+//	@Security		ApiKeyAuth
+//	@Router			/image [get]
 func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
@@ -76,11 +86,20 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, signedURL, http.StatusFound)
 }
 
-// Retrieves and serves images from Firebase Storage with caching.
-// GET /images/list
-// Query parameters:
-//   - limit (optional): number of items to return (max 1000, default 1000)
-//   - page  (optional): what page of items to return (0-indexed, default 0)
+// HandleImagesList retrieves a paginated list of images with metadata.
+//
+//	@Summary		List images
+//	@Description	Get a paginated list of images with metadata from Firestore
+//	@Tags			images
+//	@Accept			json
+//	@Produce		json
+//	@Param			limit	query		int								false	"Number of items to return (max 1000, default 1000)"	default(1000)
+//	@Param			page	query		int								false	"Page number (0-indexed, default 0)"				default(0)
+//	@Success		200		{array}		models.ImageMetadata			"List of images"
+//	@Failure		400		{string}	string							"Bad Request"
+//	@Failure		500		{string}	string							"Internal Server Error"
+//	@Security		ApiKeyAuth
+//	@Router			/images/list [get]
 func (h *Handler) HandleImagesList(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 

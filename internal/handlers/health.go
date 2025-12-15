@@ -6,8 +6,15 @@ import (
 	"net/http"
 )
 
-// Responds to health check requests with a simple status message.
-// GET /health
+// HandleHealth responds to health check requests.
+//
+//	@Summary		Health check
+//	@Description	Check if the API is running
+//	@Tags			health
+//	@Accept			json
+//	@Produce		json
+//	@Success		200	{object}	map[string]string	"status: ok"
+//	@Router			/health [get]
 func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]string{

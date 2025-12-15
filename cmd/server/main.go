@@ -12,7 +12,24 @@ import (
 
 	"trekka-api/internal/config"
 	"trekka-api/internal/server"
+
+	_ "trekka-api/docs" // Swagger docs (generated)
 )
+
+//	@title						Trekka API
+//	@version					1.0
+//	@description				Image metadata API with EXIF extraction and geolocation
+//	@termsOfService				http://swagger.io/terms/
+//	@contact.name				API Support
+//	@contact.email				support@trekka.com
+//	@license.name				MIT
+//	@license.url				https://opensource.org/licenses/MIT
+//	@host						localhost:8080
+//	@BasePath					/
+//	@securityDefinitions.apikey	ApiKeyAuth
+//	@in							header
+//	@name						X-API-Key
+//	@description				API Key authentication
 
 func main() {
 	// Load configuration
