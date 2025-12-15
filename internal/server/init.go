@@ -110,10 +110,14 @@ func CreateHandler(imageService *services.ImageService, allowedOrigins []string,
 	// Setup router with middleware
 	mux := router.Setup(h)
 
+	// Rate limiter: 10 requests per second per IP, with burst of 20
+	rateLimiter := middleware.NewRateLimiter(10, 20)
+
 	// Apply global middleware (innermost to outermost)
 	wrappedHandler := middleware.APIKeyAuth(apiKeys)(mux)
 	wrappedHandler = middleware.RequestID(wrappedHandler)
 	wrappedHandler = middleware.Logger(wrappedHandler)
+	wrappedHandler = rateLimiter.Limit(wrappedHandler) // Rate limiting
 	wrappedHandler = middleware.CORS(wrappedHandler, allowedOrigins)
 
 	return wrappedHandler
