@@ -9,7 +9,16 @@
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "/api/index.go"
+      "dest": "/api/index.go",
+      "headers": {
+        "Cache-Control": "public, s-maxage=900"
+      }
     }
-  ]
+  ],
+  "functions": {
+    "api/index.go": {
+      "maxDuration": 10,
+      "memory": 1024
+    }
+  }
 }

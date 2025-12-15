@@ -8,7 +8,7 @@ type Coordinates struct {
 }
 
 type CacheEntry struct {
-	Data        []byte
+	SignedURL   string
 	ContentType string
 	GeoLocation string
 	FileName    string
@@ -28,8 +28,10 @@ type ImageMetadata struct {
 	StoragePath   string      `firestore:"storagePath"`
 	GeoLocation   string      `firestore:"geoLocation,omitempty"`   // Format: "City, Country"
 	FormattedDate string      `firestore:"formattedDate,omitempty"` // Format: "Wednesday, 15 January 2025, 14:30"
-	CreatedAt     time.Time   `firestore:"createdAt,omitempty"`
-	UpdatedAt     time.Time   `firestore:"updatedAt,omitempty"`
+	Resolution    []float64   `firestore:"resolution,omitempty"`    // Format: [width, height]
+	TakenAt       time.Time   `firestore:"takenAt,omitempty"`       // Actual photo capture time from EXIF
+	CreatedAt     time.Time   `firestore:"createdAt,omitempty"`     // When record was created
+	UpdatedAt     time.Time   `firestore:"updatedAt,omitempty"`     // When record was updated
 }
 
 type ImageResponse struct {

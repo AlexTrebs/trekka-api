@@ -46,11 +46,11 @@ func (cs *CacheService) Get(key string) (*models.CacheEntry, bool) {
 	return entry, true
 }
 
-// Stores data in the cache with the specified key and metadata.
+// Stores a signed URL in the cache with the specified key and metadata.
 // The entry will expire after the configured TTL.
-// Returns early if key or data is empty to prevent invalid cache entries.
-func (cs *CacheService) Set(key string, data []byte, contentType, geoLocation, fileName string) {
-	if key == "" || len(data) == 0 {
+// Returns early if key or signedURL is empty to prevent invalid cache entries.
+func (cs *CacheService) Set(key string, signedURL string, contentType, geoLocation, fileName string) {
+	if key == "" || signedURL == "" {
 		return
 	}
 
@@ -58,7 +58,7 @@ func (cs *CacheService) Set(key string, data []byte, contentType, geoLocation, f
 	defer cs.mu.Unlock()
 
 	cs.cache[key] = &models.CacheEntry{
-		Data:        data,
+		SignedURL:   signedURL,
 		ContentType: contentType,
 		GeoLocation: geoLocation,
 		FileName:    fileName,

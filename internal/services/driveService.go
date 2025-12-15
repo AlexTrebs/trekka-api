@@ -19,10 +19,10 @@ import (
 
 type DriveService struct {
 	driveClient *DriveClient
-	resolver    *MetadataResolver
 	storage     *StorageService
 	firestore   *FirestoreService
 	folderID    string
+	geocoder    *GeocodingService
 	logger      *log.Logger
 }
 
@@ -34,50 +34,46 @@ func NewDriveService(
 	folderID string,
 ) *DriveService {
 	logger := log.New(os.Stdout, "[DriveSync] ", log.LstdFlags)
-	resolver := NewMetadataResolver(storage, driveClient, geocoder, folderID)
 	return &DriveService{
 		driveClient: driveClient,
-		resolver:    resolver,
 		storage:     storage,
 		firestore:   firestore,
 		folderID:    folderID,
+		geocoder:    geocoder,
 		logger:      logger,
 	}
 }
 
 // Synchronizes a single Drive file. It downloads the file, converts HEIC to JPEG
 // when needed, uploads to Storage, then resolves and persists metadata in Firestore.
-func (ds *DriveService) SyncFile(ctx context.Context, file *drive.File) error {
-	if !strings.HasPrefix(file.MimeType, "image/") {
-		ds.logger.Printf("Skipping non-image: %s", file.Name)
+// If skipExisting is true, files that already exist in Firestore will be skipped entirely.
+func (ds *DriveService) SyncFile(ctx context.Context, file *drive.File, skipExisting bool) error {
+	// Accept both images and videos
+	isImage := strings.HasPrefix(file.MimeType, "image/")
+	isVideo := strings.HasPrefix(file.MimeType, "video/")
+
+	if !isImage && !isVideo {
+		ds.logger.Printf("Skipping non-media file: %s (%s)", file.Name, file.MimeType)
 		return nil
 	}
 
-	ds.logger.Printf("Processing %s (%s)", file.Name, file.Id)
+	ds.logger.Printf("Processing %s (%s) [%s]", file.Name, file.Id, file.MimeType)
 
-	// Check existing Firestore metadata (by filename, not Drive ID)
-	// Try both original filename and converted filename (HEIC -> JPG)
-	ds.logger.Printf("Checking Firestore for existing metadata: %s", file.Name)
-	existing, err := ds.firestore.GetImageMetadataByFilename(ctx, file.Name, file.FileExtension)
+	// Check if file already exists in Firestore
+	existing, _ := ds.firestore.GetImageMetadataByFilename(ctx, file.Name, file.FileExtension)
 
-	// If not found with original name and it's HEIC, try with .jpg extension
-	if err != nil && utils.IsHeifLike(file.MimeType) {
-		convertedName := strings.TrimSuffix(file.Name, filepath.Ext(file.Name)) + ".jpg"
-		ds.logger.Printf("HEIC file not found, trying converted name: %s", convertedName)
-		existing, err = ds.firestore.GetImageMetadataByFilename(ctx, convertedName, "jpg")
+	if skipExisting && existing != nil {
+		ds.logger.Printf("File already exists in Firestore, skipping: %s", file.Name)
+		return nil
 	}
 
-	if existing != nil && !utils.HasEmptyFields(existing, false) {
+	if existing != nil && !utils.HasEmptyFields(existing) {
 		ds.logger.Printf("Already has complete metadata, skipping: %s", file.Name)
 		return nil
-	} else if existing != nil {
-		ds.logger.Printf("File found in storage but missing metadata: %s", file.Name)
-	} else if err != nil {
-		ds.logger.Printf("File not found in Firestore, will create new entry: %s", file.Name)
 	}
 
-	// Download bytes from Drive with timeout
-	ds.logger.Printf("Starting download from Drive: %s (%s)", file.Name, file.Id)
+	// Download and prepare file
+	ds.logger.Printf("Downloading from Drive: %s (%s)", file.Name, file.Id)
 	downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
@@ -85,7 +81,6 @@ func (ds *DriveService) SyncFile(ctx context.Context, file *drive.File) error {
 	if err != nil {
 		return fmt.Errorf("download from drive failed: %w", err)
 	}
-	ds.logger.Printf("Downloaded %d bytes from drive: %s", len(raw), file.Id)
 
 	finalName := file.Name
 	finalMime := file.MimeType
@@ -106,71 +101,44 @@ func (ds *DriveService) SyncFile(ctx context.Context, file *drive.File) error {
 		}
 	}
 
-	// Create minimal Firestore metadata if not present so resolver can use storage fetch
-	if existing == nil {
-		ds.logger.Printf("Uploading to firebase storage: %s", file.Id)
-
-		// Upload to Storage
-		if err := ds.storage.UploadFile(ctx, finalName, finalData, finalMime); err != nil {
-			return fmt.Errorf("upload to storage failed: %w", err)
-		}
-
-		now := time.Now()
-		existing = &models.ImageMetadata{
-			FileName:    finalName,
-			ContentType: finalMime,
-			StoragePath: finalName,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}
-
-		coords, timestamp, err := ds.resolver.extractDataFromDriveMetadata(file)
-		formatTs, err := utils.FormatTimestamp(timestamp)
-
-		if coords != nil {
-			existing.Coordinates = *coords
-		}
-
-		if formatTs != "" {
-			existing.FormattedDate = formatTs
-		}
-
-		ds.logger.Printf("Uploading to firebaseDB: %s", file.Id)
-		firestoreID, err := ds.firestore.CreateImageMetadata(ctx, existing)
-		if err != nil {
-			return fmt.Errorf("create metadata failed for %s: %w", finalName, err)
-		}
-
-		// Set the ID to the Firestore-generated document ID
-		existing.Id = firestoreID
+	// Upload to Storage
+	ds.logger.Printf("Uploading to storage: %s", finalName)
+	if err := ds.storage.UploadFile(ctx, finalName, finalData, finalMime); err != nil {
+		return fmt.Errorf("upload to storage failed: %w", err)
 	}
-	ds.logger.Printf("Resolving metadata: %s", file.Id)
 
-	// Resolve metadata (will read from storage + fallback to drive)
-	updated, err := ds.resolver.ResolveMetadata(ctx, existing)
+	// Resolve and persist metadata in one sweep (using the file bytes we already have)
+	return ds.resolveAndPersist(ctx, finalName, finalMime, finalData, existing)
+}
+
+// resolveAndPersist handles metadata resolution and Firestore persistence.
+// It extracts metadata from file bytes and creates or updates the Firestore record.
+func (ds *DriveService) resolveAndPersist(ctx context.Context, fileName, contentType string, fileData []byte, existing *models.ImageMetadata) error {
+	ds.logger.Printf("Extracting metadata from file: %s", fileName)
+
+	metadata, err := ExtractAndPersistMetadata(ctx, ds.firestore, fileName, contentType, fileData, existing, ds.geocoder)
 	if err != nil {
-		return fmt.Errorf("resolve metadata failed: %w", err)
-	}
-	ds.logger.Printf("Metadata resolved: %s (coords: %s, location: %s, date: %s)",
-		file.Id, updated.Coordinates, updated.GeoLocation, updated.FormattedDate)
-
-	// Persist metadata (update)
-	if err := ds.firestore.UpdateImageMetadata(ctx, updated.Id, updated); err != nil {
-		return fmt.Errorf("update firestore failed: %w", err)
+		return err
 	}
 
-	if updated.GeoLocation != "" {
-		ds.logger.Printf("Successfully synced %s with location: %s", updated.FileName, updated.GeoLocation)
+	if metadata.GeoLocation != "" {
+		ds.logger.Printf("Successfully synced %s with location: %s", fileName, metadata.GeoLocation)
 	} else {
-		ds.logger.Printf("Successfully synced %s (no GPS data)", updated.FileName)
+		ds.logger.Printf("Successfully synced %s (no GPS data)", fileName)
 	}
+
 	return nil
 }
 
 // BackfillFromDrive iterates all files in the Drive folder and syncs them.
 // It uses SyncFile for each file.
-func (ds *DriveService) BackfillFromDrive(ctx context.Context) error {
-	ds.logger.Printf("Starting backfill for folder %s", ds.folderID)
+// If skipExisting is true, files that already exist in Firestore will be skipped entirely.
+func (ds *DriveService) BackfillFromDrive(ctx context.Context, skipExisting bool) error {
+	if skipExisting {
+		ds.logger.Printf("Starting backfill for folder %s (skipping existing files)", ds.folderID)
+	} else {
+		ds.logger.Printf("Starting backfill for folder %s (processing all files)", ds.folderID)
+	}
 
 	files, err := ds.driveClient.ListFilesInFolder(ctx, ds.folderID)
 	if err != nil {
@@ -178,7 +146,7 @@ func (ds *DriveService) BackfillFromDrive(ctx context.Context) error {
 	}
 
 	var (
-		newCount, errCount, consecutiveErrors int
+		newCount, errCount, consecutiveErrors, skippedCount int
 	)
 
 	for _, f := range files {
@@ -186,8 +154,11 @@ func (ds *DriveService) BackfillFromDrive(ctx context.Context) error {
 			return ctx.Err()
 		}
 
+		// Add delay between files to avoid rate limiting (especially for videos)
+		time.Sleep(2 * time.Second)
+
 		// attempt sync
-		if err := ds.SyncFile(ctx, f); err != nil {
+		if err := ds.SyncFile(ctx, f, skipExisting); err != nil {
 			ds.logger.Printf("Sync error for %s: %v", f.Name, err)
 			errCount++
 			consecutiveErrors++
@@ -209,7 +180,7 @@ func (ds *DriveService) BackfillFromDrive(ctx context.Context) error {
 		newCount++
 	}
 
-	ds.logger.Printf("Backfill complete: %d processed, %d errors", newCount, errCount)
+	ds.logger.Printf("Backfill complete: %d processed, %d skipped, %d errors", newCount, skippedCount, errCount)
 	if errCount > 0 {
 		return fmt.Errorf("backfill completed with %d errors", errCount)
 	}
@@ -250,7 +221,8 @@ func (ds *DriveService) WatchForChanges(ctx context.Context, interval time.Durat
 
 				if createdTime.After(lastCheck) {
 					ds.logger.Printf("Found new file: %s", file.Name)
-					if err := ds.SyncFile(ctx, file); err != nil {
+					// Don't skip existing files when watching for changes
+					if err := ds.SyncFile(ctx, file, false); err != nil {
 						ds.logger.Printf("Error syncing new file %s: %v", file.Name, err)
 						continue
 					}

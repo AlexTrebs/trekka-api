@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"cloud.google.com/go/storage"
 )
@@ -56,6 +57,28 @@ func (s *StorageService) FetchFile(ctx context.Context, storagePath string) ([]b
 	}
 
 	return data, nil
+}
+
+// Creates a temporary signed URL for direct access to a GCS object.
+// The URL expires after 15 minutes, allowing clients to fetch files directly from GCS
+// without proxying through the application server.
+func (s *StorageService) GenerateSignedURL(ctx context.Context, storagePath string) (string, error) {
+	if storagePath == "" {
+		return "", fmt.Errorf("storage path cannot be empty")
+	}
+
+	opts := &storage.SignedURLOptions{
+		Expires: time.Now().Add(15 * time.Minute),
+		Method:  "GET",
+		Scheme:  storage.SigningSchemeV4,
+	}
+
+	url, err := s.client.Bucket(s.bucketName).SignedURL(storagePath, opts)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate signed URL: %w", err)
+	}
+
+	return url, nil
 }
 
 // Uploads a file to Google Cloud Storage.

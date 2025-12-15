@@ -68,18 +68,18 @@ func InitServices(ctx context.Context, cfg *config.Config) (*Services, error) {
 	// Initialize Google Drive sync if enabled
 	if cfg.DriveSyncInterval > 0 {
 		if cfg.GoogleDriveFolderID == "" {
-			log.Println("⚠️  Drive sync enabled but GOOGLE_DRIVE_FOLDER_ID not set, skipping Drive sync")
+			log.Println("Drive sync enabled but GOOGLE_DRIVE_FOLDER_ID not set, skipping Drive sync")
 		} else if cfg.GoogleAPIKey == "" && cfg.FirebaseCredentialsPath == "" && cfg.FirebaseCredentialsJSON == "" {
-			log.Println("⚠️  Drive sync enabled but no credentials available, skipping Drive sync")
+			log.Println("Drive sync enabled but no credentials available, skipping Drive sync")
 		} else {
-			log.Println("🔄 Initializing Google Drive sync service...")
+			log.Println("Initializing Google Drive sync service...")
 
 			var driveClient *drive.Service
 			if cfg.GoogleAPIKey != "" {
 				var err error
 				driveClient, err = drive.NewService(context.Background(), option.WithAPIKey(cfg.GoogleAPIKey))
 				if err != nil {
-					log.Printf("⚠️  Failed to create Drive API client: %v", err)
+					log.Printf("Failed to create Drive API client: %v", err)
 				}
 			}
 
@@ -103,15 +103,17 @@ func InitServices(ctx context.Context, cfg *config.Config) (*Services, error) {
 }
 
 // CreateHandler creates an HTTP handler with all middleware applied
-func CreateHandler(imageService *services.ImageService, allowedOrigins []string) http.Handler {
+func CreateHandler(imageService *services.ImageService, allowedOrigins []string, apiKeys []string) http.Handler {
 	// Initialize handlers
 	h := handlers.New(imageService)
 
 	// Setup router with middleware
 	mux := router.Setup(h)
 
-	// Apply global middleware
-	wrappedHandler := middleware.Logger(mux)
+	// Apply global middleware (innermost to outermost)
+	wrappedHandler := middleware.APIKeyAuth(apiKeys)(mux)
+	wrappedHandler = middleware.RequestID(wrappedHandler)
+	wrappedHandler = middleware.Logger(wrappedHandler)
 	wrappedHandler = middleware.CORS(wrappedHandler, allowedOrigins)
 
 	return wrappedHandler
@@ -122,12 +124,12 @@ func CreateHandler(imageService *services.ImageService, allowedOrigins []string)
 // Returns a cancel function to stop the sync gracefully.
 func StartDriveSync(ctx context.Context, driveService *services.DriveService, interval time.Duration, backfillOnStartup bool) context.CancelFunc {
 	if driveService == nil {
-		log.Println("⚠️  Cannot start Drive sync: driveService is nil")
+		log.Println("Cannot start Drive sync: driveService is nil")
 		return func() {} // Return no-op cancel function
 	}
 
 	if interval <= 0 {
-		log.Printf("⚠️  Invalid Drive sync interval: %v (must be positive)", interval)
+		log.Printf("Invalid Drive sync interval: %v (must be positive)", interval)
 		return func() {} // Return no-op cancel function
 	}
 
@@ -136,24 +138,25 @@ func StartDriveSync(ctx context.Context, driveService *services.DriveService, in
 	go func() {
 		// Run backfill if enabled
 		if backfillOnStartup {
-			log.Println("📦 Running one-time backfill from Google Drive...")
-			if err := driveService.BackfillFromDrive(driveCtx); err != nil {
+			log.Println("Running one-time backfill from Google Drive...")
+			// Skip existing files on server startup (only process new files)
+			if err := driveService.BackfillFromDrive(driveCtx, true); err != nil {
 				if err != context.Canceled {
-					log.Printf("⚠️  Backfill completed with errors: %v", err)
+					log.Printf("Backfill completed with errors: %v", err)
 				} else {
-					log.Println("⚠️  Backfill canceled")
+					log.Println("Backfill canceled")
 					return
 				}
 			} else {
-				log.Println("✅ Backfill completed successfully")
+				log.Println("Backfill completed successfully")
 			}
 		}
 
 		// Start continuous watch
-		log.Printf("🚀 Starting Drive watch (interval: %v)", interval)
+		log.Printf("Starting Drive watch (interval: %v)", interval)
 		if err := driveService.WatchForChanges(driveCtx, interval); err != nil {
 			if err != context.Canceled {
-				log.Printf("❌ Drive watch error: %v", err)
+				log.Printf("Drive watch error: %v", err)
 			}
 		}
 	}()

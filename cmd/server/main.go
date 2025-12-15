@@ -30,7 +30,7 @@ func main() {
 	}
 
 	// Create HTTP handler
-	handler := server.CreateHandler(svcs.Image, cfg.AllowedOrigins)
+	handler := server.CreateHandler(svcs.Image, cfg.AllowedOrigins, cfg.APIKeys)
 
 	// Start Google Drive background sync if enabled
 	var driveCancelFunc context.CancelFunc

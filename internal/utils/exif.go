@@ -3,6 +3,9 @@ package utils
 import (
 	"bytes"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"time"
 
 	"trekka-api/internal/models"
@@ -10,19 +13,19 @@ import (
 	"github.com/rwcarlsen/goexif/exif"
 )
 
-// Extracts GPS coordinates and timestamp from image EXIF data
-func ExtractData(imageData []byte) (models.Coordinates, string, error) {
+// Extracts GPS coordinates, timestamp, and resolution from image EXIF data
+func ExtractData(imageData []byte) (models.Coordinates, string, []float64, error) {
 	reader := bytes.NewReader(imageData)
 
 	x, err := exif.Decode(reader)
 	if err != nil {
-		return models.Coordinates{}, "", fmt.Errorf("failed to decode EXIF: %w", err)
+		return models.Coordinates{}, "", nil, fmt.Errorf("failed to decode EXIF: %w", err)
 	}
 
 	// Try to get GPS latitude
 	lat, lon, err := x.LatLong()
 	if err != nil {
-		return models.Coordinates{}, "", fmt.Errorf("no GPS data found: %w", err)
+		return models.Coordinates{}, "", nil, fmt.Errorf("no GPS data found: %w", err)
 	}
 
 	// Get dateTime timestamp
@@ -57,7 +60,7 @@ func ExtractData(imageData []byte) (models.Coordinates, string, error) {
 	}
 
 	if timestamp == "" {
-		return models.Coordinates{}, "", fmt.Errorf("failed to parse timestamp: %w", lastErr)
+		return models.Coordinates{}, "", nil, fmt.Errorf("failed to parse timestamp: %w", lastErr)
 	}
 
 	// Format coordinates
@@ -66,11 +69,19 @@ func ExtractData(imageData []byte) (models.Coordinates, string, error) {
 		Lng: fmt.Sprintf("%.6f", lon),
 	}
 
-	return coords, timestamp, nil
+	// Extract resolution from image data
+	var resolution []float64
+	reader.Seek(0, 0) // Reset reader to start
+	config, _, err := image.DecodeConfig(reader)
+	if err == nil && config.Width > 0 && config.Height > 0 {
+		resolution = []float64{float64(config.Width), float64(config.Height)}
+	}
+
+	return coords, timestamp, resolution, nil
 }
 
 // Checks if an image already has GPS/location data
-func HasEmptyFields(metadata *models.ImageMetadata, ignoreGeoLoc bool) bool {
+func hasEmptyFields(metadata *models.ImageMetadata, ignoreGeoLoc bool) bool {
 	// Check if GeoLocation string is present
 	if metadata.GeoLocation == "" && !ignoreGeoLoc {
 		return true
@@ -84,17 +95,29 @@ func HasEmptyFields(metadata *models.ImageMetadata, ignoreGeoLoc bool) bool {
 		return true
 	}
 
+	if metadata.TakenAt.IsZero() {
+		return true
+	}
+
 	return false
 }
 
-// FormatTimestamp converts various timestamp formats to a human-readable format
-// Supports both ISO 8601 (2006-01-02T15:04:05Z) and EXIF format (2006:01:02 15:04:05)
-// Returns format: "Wednesday, 15 January 2025, 14:30"
-func FormatTimestamp(timestamp string) (string, error) {
-	var t time.Time
-	var err error
+func HasEmptyFields(metadata *models.ImageMetadata) bool {
+	return hasEmptyFields(metadata, false)
+}
 
-	// Try multiple timestamp formats in order of likelihood
+func HasEmptyFieldsSkipGeolocation(metadata *models.ImageMetadata) bool {
+	return hasEmptyFields(metadata, true)
+}
+
+// ParseTimeString attempts to parse a timestamp string into a time.Time value.
+// It tries multiple common formats (RFC3339, EXIF, ISO 8601).
+// Returns zero time if parsing fails.
+func ParseTimeString(timestamp string) time.Time {
+	if timestamp == "" {
+		return time.Time{}
+	}
+
 	formats := []string{
 		time.RFC3339,          // "2006-01-02T15:04:05Z07:00" (with timezone)
 		"2006:01:02 15:04:05", // EXIF format
@@ -102,14 +125,19 @@ func FormatTimestamp(timestamp string) (string, error) {
 	}
 
 	for _, format := range formats {
-		t, err = time.Parse(format, timestamp)
-		if err == nil {
-			break
+		if t, err := time.Parse(format, timestamp); err == nil {
+			return t
 		}
 	}
 
-	if err != nil {
-		return "", fmt.Errorf("failed to parse timestamp %q: %w", timestamp, err)
+	return time.Time{}
+}
+
+func FormatTimeDisplay(timestamp string) (string, error) {
+	t := ParseTimeString(timestamp)
+
+	if t.IsZero() {
+		return "", fmt.Errorf("failed to parse timestamp %q", timestamp)
 	}
 
 	// Format as: "Wednesday, 15 January 2025, 14:30"

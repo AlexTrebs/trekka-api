@@ -61,7 +61,7 @@ func (d *DriveClient) Find(ctx context.Context, folderID, name string) (*drive.F
 
 		list, err := d.client.Files.List().Context(ctx).
 			Q(q).
-			Fields("files(id, name, mimeType, size, createdTime, modifiedTime, imageMediaMetadata)").
+			Fields("files(id, name, mimeType, size, createdTime, modifiedTime, imageMediaMetadata, videoMediaMetadata)").
 			Do()
 		if err != nil {
 			// Check for rate limit errors using proper type assertion
@@ -157,7 +157,7 @@ func (d *DriveClient) ListFilesInFolder(ctx context.Context, folderID string) ([
 			call := d.client.Files.List().
 				Context(ctx).
 				Q(query).
-				Fields("nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime, imageMediaMetadata)").
+				Fields("nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime, imageMediaMetadata, videoMediaMetadata)").
 				PageSize(1000)
 
 			if pageToken != "" {
