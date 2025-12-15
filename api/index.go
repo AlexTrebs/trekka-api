@@ -39,7 +39,7 @@ func initHandler() error {
 		}
 
 		// Create HTTP handler
-		wrappedHandler := server.CreateHandler(svcs.Image, cfg.AllowedOrigins)
+		wrappedHandler := server.CreateHandler(svcs.Image, cfg.AllowedOrigins, cfg.APIKeys)
 
 		// Start Google Drive background sync if enabled
 		// Note: In serverless environments, this goroutine persists across requests

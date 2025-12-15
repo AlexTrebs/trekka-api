@@ -4,150 +4,124 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"trekka-api/internal/models"
 	"trekka-api/internal/utils"
-
-	"google.golang.org/api/drive/v3"
 )
 
-// Performs the full metadata extraction pipeline:
-//  1. try Firebase Storage EXIF
-//  2. fallback to Drive metadata
-//  3. fallback to Drive EXIF (download)
-//  4. reverse geocode
-//  5. timestamp formatting
-type MetadataResolver struct {
-	storage  *StorageService
-	drive    *DriveClient
-	geocoder *GeocodingService
-	folderID string
-}
-
-// Creates a resolver used in both DriveSync + Updater.
-func NewMetadataResolver(
-	storage *StorageService,
-	drive *DriveClient,
-	geocoder *GeocodingService,
-	folderID string,
-) *MetadataResolver {
-	return &MetadataResolver{
-		storage:  storage,
-		drive:    drive,
-		geocoder: geocoder,
-		folderID: folderID,
-	}
-}
-
-// Populates Coordinates, GeoLocation, and Timestamp for an image.
-func (r *MetadataResolver) ResolveMetadata(ctx context.Context, metadata *models.ImageMetadata) (*models.ImageMetadata, error) {
-	return r.resolveMetadata(ctx, metadata, false)
-}
-
-// Forces download from Drive instead of trying Storage first.
-func (r *MetadataResolver) ResolveMetadataWithBackfill(ctx context.Context, metadata *models.ImageMetadata) (*models.ImageMetadata, error) {
-	return r.resolveMetadata(ctx, metadata, true)
-}
-
-func (r *MetadataResolver) resolveMetadata(ctx context.Context, metadata *models.ImageMetadata, skipStorage bool) (*models.ImageMetadata, error) {
-	var gps *models.Coordinates
+// Extracts metadata from file bytes (EXIF for images, MP4 for videos).
+// Returns a metadata struct with coordinates, timestamp, resolution, and location (if geocoding succeeds).
+func ExtractMetadataFromBytes(ctx context.Context, fileName, contentType string, fileData []byte) (*models.ImageMetadata, error) {
+	var coords models.Coordinates
 	var timestamp string
+	var resolution []float64
+	var extractErr error
 
-	if !utils.HasEmptyFields(metadata, true) {
-		timestamp = metadata.FormattedDate
-		gps = &metadata.Coordinates
+	isVideo := strings.HasPrefix(contentType, "video/")
+	if isVideo {
+		coords, timestamp, resolution, extractErr = utils.ExtractMP4Data(fileData)
+	} else {
+		coords, timestamp, resolution, extractErr = utils.ExtractData(fileData)
 	}
 
-	// Try Firebase Storage EXIF (unless backfill mode)
-	if !skipStorage && gps == nil {
-		log.Printf("Fetching from storage: %s", metadata.StoragePath)
-
-		data, err := r.storage.FetchFile(ctx, metadata.StoragePath)
-		if err == nil {
-			coords, extractedTimestamp, extractionErr := utils.ExtractData(data)
-
-			log.Printf("coords: %s, timestamp: %s", coords, extractedTimestamp)
-
-			if extractionErr == nil {
-				timestamp = extractedTimestamp
-				gps = &coords
-			}
-		}
+	if extractErr != nil {
+		log.Printf("Warning: failed to extract metadata from %s: %v", fileName, extractErr)
 	}
 
-	// Try Drive metadata
-	if (gps == nil || timestamp == "") && r.drive != nil && r.folderID != "" {
-		log.Printf("Fetching metadata from Drive")
-
-		file, err := r.drive.Find(ctx, r.folderID, metadata.FileName)
-		if err == nil {
-			extractedGPS, extractedTimestamp, extractErr := r.extractDataFromDriveMetadata(file)
-			if extractErr == nil {
-				if gps == nil {
-					gps = extractedGPS
-				}
-				if timestamp == "" {
-					timestamp = extractedTimestamp
-				}
-			} else {
-				log.Printf("Warning: failed to extract Drive metadata for %s: %v", metadata.FileName, extractErr)
-			}
-		} else {
-			log.Printf("Warning: failed to find file in Drive: %v", err)
-		}
+	// Build metadata struct with extracted data
+	metadata := &models.ImageMetadata{
+		FileName:    fileName,
+		ContentType: contentType,
+		StoragePath: fileName,
 	}
 
-	// Populate GPS data if available
-	if gps != nil {
-		metadata.Coordinates = *gps
+	// Populate extracted data
+	if coords.Lat != "" && coords.Lng != "" {
+		metadata.Coordinates = coords
 
-		// Always reverse geocode when we have coordinates
-		location, err := r.geocoder.ReverseGeocode(ctx, *gps)
+		// Geocode coordinates to location name
+		geocoder := NewGeocodingService()
+		location, err := geocoder.ReverseGeocode(ctx, coords)
 		if err == nil && location != "" {
 			metadata.GeoLocation = location
 		}
 	}
 
-	// Populate timestamp if available
 	if timestamp != "" {
-		formattedTS, err := utils.FormatTimestamp(timestamp)
-		if err != nil {
-			log.Printf("Warning: failed to format timestamp %q: %v", timestamp, err)
-		} else {
-			metadata.FormattedDate = formattedTS
+		metadata.TakenAt = utils.ParseTimeString(timestamp)
+		if formattedDate, err := utils.FormatTimeDisplay(timestamp); err == nil {
+			metadata.FormattedDate = formattedDate
 		}
 	}
 
-	metadata.UpdatedAt = time.Now()
+	if len(resolution) == 2 {
+		metadata.Resolution = resolution
+	}
 
 	return metadata, nil
 }
 
-// Extracts GPS coordinates from Drive's imageMediaMetadata.
-// This is the most reliable method for all image formats including HEIF.
-func (r *MetadataResolver) extractDataFromDriveMetadata(driveFile *drive.File) (*models.Coordinates, string, error) {
-	if driveFile.ImageMediaMetadata == nil {
-		return nil, "", fmt.Errorf("no image metadata in Drive file")
+// Extracts metadata from file bytes and saves to Firestore.
+// For new files (existing == nil), it creates a new record.
+// For existing files, it updates only the extracted fields.
+func ExtractAndPersistMetadata(
+	ctx context.Context,
+	firestoreService *FirestoreService,
+	fileName, contentType string,
+	fileData []byte,
+	existing *models.ImageMetadata,
+	geoGeocodingService *GeocodingService,
+) (*models.ImageMetadata, error) {
+	// Extract metadata from file
+	extracted, err := ExtractMetadataFromBytes(ctx, fileName, contentType, fileData)
+	if err != nil {
+		return nil, err
 	}
 
-	if driveFile.ImageMediaMetadata.Location == nil {
-		return nil, "", fmt.Errorf("no location data in Drive metadata")
+	now := time.Now()
+
+	// Merge with existing record or create new
+	var metadata *models.ImageMetadata
+	if existing != nil {
+		metadata = existing
+		// Update with extracted data
+		if extracted.Coordinates.Lat != "" && extracted.Coordinates.Lng != "" {
+			metadata.Coordinates = extracted.Coordinates
+			metadata.GeoLocation = extracted.GeoLocation
+		}
+		if !extracted.TakenAt.IsZero() {
+			metadata.TakenAt = extracted.TakenAt
+			metadata.FormattedDate = extracted.FormattedDate
+		}
+		if len(extracted.Resolution) == 2 {
+			metadata.Resolution = extracted.Resolution
+		}
+		metadata.UpdatedAt = now
+	} else {
+		metadata = extracted
+		metadata.CreatedAt = now
+		metadata.UpdatedAt = now
 	}
 
-	lat := driveFile.ImageMediaMetadata.Location.Latitude
-	lon := driveFile.ImageMediaMetadata.Location.Longitude
-
-	if lat == 0 && lon == 0 {
-		return nil, "", fmt.Errorf("GPS coordinates are zero")
+	// If TakenAt still not set, fall back to CreatedAt
+	if metadata.TakenAt.IsZero() && !metadata.CreatedAt.IsZero() {
+		metadata.TakenAt = metadata.CreatedAt
 	}
 
-	timestamp := driveFile.ImageMediaMetadata.Time
+	// Persist to Firestore (create or update)
+	if existing == nil {
+		firestoreID, err := firestoreService.CreateImageMetadata(ctx, metadata)
+		if err != nil {
+			return nil, fmt.Errorf("create metadata failed: %w", err)
+		}
+		metadata.Id = firestoreID
+	} else {
+		if err := firestoreService.UpdateImageMetadata(ctx, metadata.Id, metadata); err != nil {
+			return nil, fmt.Errorf("update metadata failed: %w", err)
+		}
+	}
 
-	return &models.Coordinates{
-			Lat: fmt.Sprintf("%.6f", lat),
-			Lng: fmt.Sprintf("%.6f", lon),
-		},
-		timestamp,
-		nil
+	return metadata, nil
 }

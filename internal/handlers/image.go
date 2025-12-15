@@ -2,14 +2,14 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"log"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	apperrors "trekka-api/internal/errors"
 	"trekka-api/internal/models"
 )
 
@@ -52,11 +52,11 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 		FileName: fileName,
 	}
 
-	data, contentType, geoLocation, err := h.imageService.GetImage(r.Context(), req)
+	signedURL, contentType, geoLocation, err := h.imageService.GetImage(r.Context(), req)
 	if err != nil {
 		log.Printf("[Image] Failed to get image %s: %v", fileName, err)
 		// Check if it's a "not found" error vs infrastructure error
-		if strings.Contains(err.Error(), "no metadata found") {
+		if errors.Is(err, apperrors.ErrNotFound) {
 			http.Error(w, "File not found", http.StatusNotFound)
 		} else {
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -64,24 +64,22 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[Image] Served %s (%s at %s) in %v", fileName, contentType, geoLocation, time.Since(start))
+	log.Printf("[Image] Redirecting to signed URL for %s (%s at %s) in %v", fileName, contentType, geoLocation, time.Since(start))
 
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.Header().Set("Cache-Control", "public, max-age=3600")
-	w.Header().Set("Content-Disposition",
-		fmt.Sprintf(`inline; filename="%s"`, url.PathEscape(fileName)))
+	// Set metadata headers before redirect
+	w.Header().Set("Cache-Control", "public, max-age=900, s-maxage=900") // 15 min
+	w.Header().Set("CDN-Cache-Control", "public, max-age=86400")         // Vercel edge: 24hr
 	w.Header().Set("X-Geo-Location", geoLocation)
+	w.Header().Set("X-Content-Type", contentType)
 
-	if _, err := w.Write(data); err != nil {
-		log.Printf("[Image] Failed to write response: %v", err)
-	}
+	// Redirect to GCS signed URL for direct download
+	http.Redirect(w, r, signedURL, http.StatusFound)
 }
 
 // Retrieves and serves images from Firebase Storage with caching.
 // GET /images/list
 // Query parameters:
-//   - limit (optional): number of items to return (max 1000, default 100)
+//   - limit (optional): number of items to return (max 1000, default 1000)
 //   - page  (optional): what page of items to return (0-indexed, default 0)
 func (h *Handler) HandleImagesList(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
@@ -95,7 +93,7 @@ func (h *Handler) HandleImagesList(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 
 	// Parse and validate limit parameter
-	limit := 100 // default
+	limit := 1000
 	if limitStr := query.Get("limit"); limitStr != "" {
 		parsedLimit, err := strconv.Atoi(limitStr)
 		if err != nil || parsedLimit < 0 {
@@ -126,7 +124,7 @@ func (h *Handler) HandleImagesList(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[Images] Served %d images (limit=%d, page=%d) in %v", len(images), limit, page, time.Since(start))
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "public, max-age=300") // Shorter cache for list endpoints
+	w.Header().Set("Cache-Control", "public, max-age=60, s-maxage=300") // 1 min client, 5 min edge
 
 	if err := json.NewEncoder(w).Encode(images); err != nil {
 		log.Printf("[Images] Failed to encode response: %v", err)

@@ -8,7 +8,10 @@ import (
 
 	"cloud.google.com/go/firestore"
 	"google.golang.org/api/iterator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
+	"trekka-api/internal/errors"
 	"trekka-api/internal/models"
 	"trekka-api/internal/utils"
 )
@@ -29,6 +32,10 @@ func NewFirestoreService(client *firestore.Client, collection string) *Firestore
 func (fs *FirestoreService) GetImageMetadata(ctx context.Context, id string) (*models.ImageMetadata, error) {
 	doc, err := fs.client.Collection(fs.collection).Doc(id).Get(ctx)
 	if err != nil {
+		// Check if document not found
+		if status.Code(err) == codes.NotFound {
+			return nil, errors.ErrNotFound
+		}
 		return nil, fmt.Errorf("failed to get document: %w", err)
 	}
 
@@ -50,6 +57,57 @@ func (fs *FirestoreService) ListImageMetadata(ctx context.Context, limit int, pa
 		return nil, fmt.Errorf("page cannot be negative")
 	}
 
+	// Order by takenAt if available, fallback to createdAt
+	query := fs.client.Collection(fs.collection).OrderBy("takenAt", firestore.Desc)
+
+	if limit > 0 {
+		// Cap maximum limit to prevent excessive memory usage
+		if limit > 1000 {
+			limit = 1000
+		}
+		query = query.Limit(limit)
+		if page > 0 {
+			query = query.Offset(page * limit)
+		}
+	}
+
+	iter := query.Documents(ctx)
+	defer iter.Stop()
+
+	var results []*models.ImageMetadata
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to iterate documents: %w", err)
+		}
+
+		var metadata models.ImageMetadata
+		if err := doc.DataTo(&metadata); err != nil {
+			// Log but don't fail on individual document parse errors
+			continue
+		}
+
+		results = append(results, &metadata)
+	}
+
+	return results, nil
+}
+
+// Retrieves all image metadata ordered by createdAt.
+// Used for migrations where takenAt field might not exist yet.
+func (fs *FirestoreService) ListAllImageMetadata(ctx context.Context, limit int, page int) ([]*models.ImageMetadata, error) {
+	// Validate pagination parameters
+	if limit < 0 {
+		return nil, fmt.Errorf("limit cannot be negative")
+	}
+	if page < 0 {
+		return nil, fmt.Errorf("page cannot be negative")
+	}
+
+	// Order by createdAt instead of takenAt for migration compatibility
 	query := fs.client.Collection(fs.collection).OrderBy("createdAt", firestore.Desc)
 
 	if limit > 0 {
@@ -130,7 +188,11 @@ func (fs *FirestoreService) GetImageMetadataByFilename(ctx context.Context, file
 
 	doc, err := iter.Next()
 	if err != nil {
-		return nil, fmt.Errorf("file not found: %w", err)
+		// Check if no documents found
+		if err == iterator.Done {
+			return nil, errors.ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to query documents: %w", err)
 	}
 
 	var metadata models.ImageMetadata

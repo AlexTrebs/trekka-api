@@ -21,10 +21,12 @@ type Config struct {
 	CacheTTL                time.Duration
 	CacheCleanupInterval    time.Duration
 	AllowedOrigins          []string
+	APIKeys                 []string      // API keys for authentication (comma-separated)
 	GoogleDriveFolderID     string        // Google Drive folder ID for sync
 	GoogleAPIKey            string        // Google API key for Drive access (alternative to service account)
 	DriveSyncInterval       time.Duration // How often to check Drive for new files (default: 5 minutes)
 	DriveBackfillOnStartup  bool          // Run one-time backfill on server startup before starting watch
+	IsVercel                bool          // Detected via VERCEL env var
 }
 
 // Load reads configuration from environment variables and .env file.
@@ -43,13 +45,15 @@ func Load() (*Config, error) {
 		FirebaseCredentialsPath: getEnv("FIREBASE_CREDENTIALS_PATH", "firebase-service-account.json"),
 		FirebaseCredentialsJSON: getEnv("FIREBASE_CREDENTIALS_JSON", ""),
 		FirestoreCollection:     getEnv("FIRESTORE_COLLECTION", "images"),
-		CacheTTL:                getDurationEnv("CACHE_TTL", 12*time.Hour),
+		CacheTTL:                getDurationEnv("CACHE_TTL", 15*time.Minute),
 		CacheCleanupInterval:    getDurationEnv("CACHE_CLEANUP_INTERVAL", 10*time.Minute),
 		AllowedOrigins:          getList("ALLOWED_ORIGINS", []string{"*"}),
+		APIKeys:                 getList("API_KEYS", []string{}),
 		GoogleDriveFolderID:     getEnv("GOOGLE_DRIVE_FOLDER_ID", ""),
 		GoogleAPIKey:            getEnv("GOOGLE_API_KEY", ""),
 		DriveSyncInterval:       getDurationEnv("DRIVE_SYNC_INTERVAL", 5*time.Minute),
 		DriveBackfillOnStartup:  getBoolEnv("DRIVE_BACKFILL_ON_STARTUP", false),
+		IsVercel:                getEnv("VERCEL", "") != "",
 	}
 
 	// Validate required fields
@@ -79,6 +83,9 @@ func (c *Config) Validate() error {
 	}
 	if c.CacheCleanupInterval <= 0 {
 		return fmt.Errorf("CACHE_CLEANUP_INTERVAL must be positive")
+	}
+	if len(c.APIKeys) == 0 {
+		return fmt.Errorf("API_KEYS is required (comma-separated list of API keys)")
 	}
 	return nil
 }

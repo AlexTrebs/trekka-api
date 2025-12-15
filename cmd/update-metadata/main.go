@@ -5,7 +5,6 @@ import (
 	"flag"
 	"log"
 	"os"
-	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -23,53 +22,53 @@ import (
 func processImages(
 	ctx context.Context,
 	logger *log.Logger,
+	storageService *services.StorageService,
 	firestoreService *services.FirestoreService,
-	resolver *services.MetadataResolver,
-	images []*models.ImageMetadata, // can wrap Firestore models
+	images []*models.ImageMetadata,
 	onlyEmpty, dryRun bool,
 	stats *struct {
 		updated, skipped, noGPS, errors int
 	},
 ) {
 	for _, img := range images {
-		// Rate limiting: add delay between Drive API calls in backfill mode
-		if onlyEmpty && !utils.HasEmptyFields(img, false) {
+		if onlyEmpty && !utils.HasEmptyFields(img) {
 			logger.Printf("⏭️  Skipping %s (already has complete data)", img.FileName)
 			stats.skipped++
 			continue
 		}
 
-		logger.Printf("🔄 Resolving metadata for %s", img.FileName)
+		logger.Printf("🔄 Processing %s", img.FileName)
 
-		var resolved *models.ImageMetadata
-		var err error
-
-		resolved, err = resolver.ResolveMetadata(ctx, img)
-
+		// Fetch file from Storage
+		fileData, err := storageService.FetchFile(ctx, img.StoragePath)
 		if err != nil {
-			logger.Printf("❌ Failed to resolve %s: %v", img.FileName, err)
-			// Check if this is a "no GPS data" error or an actual failure
-			if strings.Contains(err.Error(), "no GPS") || strings.Contains(err.Error(), "coordinates not found") {
-				stats.noGPS++
-			} else {
-				stats.errors++
-			}
-			continue
-		}
-
-		if dryRun {
-			logger.Printf("🔍 [DRY] Would update %s -> %s", resolved.FileName, resolved.GeoLocation)
-			stats.updated++
-			continue
-		}
-
-		if err := firestoreService.UpdateImageMetadata(ctx, resolved.Id, resolved); err != nil {
-			logger.Printf("❌ Save failed for %s: %v", resolved.FileName, err)
+			logger.Printf("❌ Failed to fetch %s from storage: %v", img.FileName, err)
 			stats.errors++
 			continue
 		}
 
-		logger.Printf("✅ Updated %s with location: %s", resolved.FileName, resolved.GeoLocation)
+		if dryRun {
+			// Extract metadata but don't persist
+			extracted, err := services.ExtractMetadataFromBytes(ctx, img.FileName, img.ContentType, fileData)
+			if err != nil {
+				logger.Printf("❌ Failed to extract metadata from %s: %v", img.FileName, err)
+				stats.errors++
+				continue
+			}
+			logger.Printf("🔍 [DRY] Would update %s -> %s", img.FileName, extracted.GeoLocation)
+			stats.updated++
+			continue
+		}
+
+		// Extract and persist metadata using shared function
+		updated, err := services.ExtractAndPersistMetadata(ctx, firestoreService, img.FileName, img.ContentType, fileData, img, services.NewGeocodingService())
+		if err != nil {
+			logger.Printf("❌ Failed to process %s: %v", img.FileName, err)
+			stats.errors++
+			continue
+		}
+
+		logger.Printf("✅ Updated %s with location: %s", updated.FileName, updated.GeoLocation)
 		stats.updated++
 
 		time.Sleep(100 * time.Millisecond)
@@ -82,6 +81,7 @@ func main() {
 	onlyEmpty := flag.Bool("only-empty", false, "Only update entries with empty GPS/location fields")
 	dryRun := flag.Bool("dry-run", false, "Preview changes without updating Firestore")
 	backfill := flag.Bool("backfill", false, "Force download from Google Drive (slower but more reliable)")
+	skipExisting := flag.Bool("skip-existing", true, "Skip files that already exist in Firestore during backfill")
 	flag.Parse()
 
 	if *dryRun {
@@ -129,13 +129,12 @@ func main() {
 	// Services
 	storageService := services.NewStorageService(storageClient, cfg.FirebaseBucketName)
 	firestoreService := services.NewFirestoreService(firestoreClient, cfg.FirestoreCollection)
-	geocoder := services.NewGeocodingService()
-	driveFileService := services.NewDriveClient(driveSvc)
-	resolver := services.NewMetadataResolver(storageService, driveFileService, geocoder, cfg.GoogleDriveFolderID)
 
 	// Drive sync service (for backfill mode)
 	var driveService *services.DriveService
 	if driveSvc != nil && cfg.GoogleDriveFolderID != "" {
+		driveFileService := services.NewDriveClient(driveSvc)
+		geocoder := services.NewGeocodingService()
 		driveService = services.NewDriveService(driveFileService, storageService, firestoreService, geocoder, cfg.GoogleDriveFolderID)
 	}
 
@@ -149,7 +148,9 @@ func main() {
 		}
 
 		logger.Println("Starting Drive backfill...")
-		if err := driveService.BackfillFromDrive(ctx); err != nil {
+		// When running from update-metadata in backfill mode, respect the skipExisting flag
+		// By default it's true (skip existing), but can be disabled with --skip-existing=false
+		if err := driveService.BackfillFromDrive(ctx, *skipExisting); err != nil {
 			logger.Fatalf("Backfill failed: %v", err)
 		}
 
@@ -160,7 +161,7 @@ func main() {
 		if err != nil {
 			logger.Fatalf("list images: %v", err)
 		}
-		processImages(ctx, logger, firestoreService, resolver, allImages, *onlyEmpty, *dryRun, &stats)
+		processImages(ctx, logger, storageService, firestoreService, allImages, *onlyEmpty, *dryRun, &stats)
 
 		logger.Printf("Done: updated=%d skipped=%d noGPS=%d errors=%d",
 			stats.updated, stats.skipped, stats.noGPS, stats.errors)
