@@ -1,0 +1,53 @@
+steps:
+  # Pull previous image for caching (ignore errors if first build)
+  - name: "gcr.io/cloud-builders/docker"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        docker pull gcr.io/$PROJECT_ID/trekka-api:latest || exit 0
+
+  # Build with cache from previous image
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "--cache-from"
+      - "gcr.io/$PROJECT_ID/trekka-api:latest"
+      - "-t"
+      - "gcr.io/$PROJECT_ID/trekka-api:latest"
+      - "-t"
+      - "gcr.io/$PROJECT_ID/trekka-api:$COMMIT_SHA"
+      - "."
+
+  # Push the built image
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "gcr.io/$PROJECT_ID/trekka-api:latest"
+
+  # Deploy to Cloud Run
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - "run"
+      - "deploy"
+      - "trekka-api"
+      - "--image"
+      - "gcr.io/$PROJECT_ID/trekka-api:latest"
+      - "--region"
+      - "europe-west1" # Change to your region
+      - "--platform"
+      - "managed"
+      - "--allow-unauthenticated"
+
+# Store images in Google Container Registry
+images:
+  - "gcr.io/$PROJECT_ID/trekka-api:latest"
+  - "gcr.io/$PROJECT_ID/trekka-api:$COMMIT_SHA"
+
+# Build options
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+# Timeout for the entire build
+timeout: "1200s" # 20 minutes max

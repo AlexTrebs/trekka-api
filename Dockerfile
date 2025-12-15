@@ -19,7 +19,8 @@ RUN CGO_ENABLED=1 GOOS=linux go build -o server cmd/server/main.go
 # Final stage
 FROM alpine:latest
 
-RUN apk --no-cache add ca-certificates
+# Install C++ runtime libraries required for CGO binaries
+RUN apk --no-cache add ca-certificates libgcc libstdc++
 
 WORKDIR /root/
 
