@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -61,8 +60,6 @@ func NewGeocodingService() *GeocodingService {
 //  5. extracts city/town/village + country
 //  6. caches & returns the formatted result
 func (g *GeocodingService) ReverseGeocode(ctx context.Context, coordinates models.Coordinates) (string, error) {
-	log.Printf("Reverse GeoCoding...")
-
 	lat, lng, key, err := g.normalizeCoordinates(coordinates)
 	if err != nil {
 		return "", err

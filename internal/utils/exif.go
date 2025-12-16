@@ -122,6 +122,7 @@ func ParseTimeString(timestamp string) time.Time {
 		time.RFC3339,          // "2006-01-02T15:04:05Z07:00" (with timezone)
 		"2006:01:02 15:04:05", // EXIF format
 		"2006-01-02T15:04:05", // ISO 8601 without timezone
+		"2006-01-02 15:04:05", // ISO 8601 date with space separator (from MP4)
 	}
 
 	for _, format := range formats {
